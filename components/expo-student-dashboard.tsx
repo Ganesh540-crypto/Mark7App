@@ -9,11 +9,11 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  Modal,
 } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import { apiService, ProfileUpdateData, ApiResponse } from '../api';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { apiService, ProfileUpdateData, ApiResponse, Checkout } from '../api';
 
 const Tab = createBottomTabNavigator();
 
@@ -22,7 +22,6 @@ interface DashboardData {
   upcomingClasses: number;
   pendingCorrections: number;
 }
-
 
 interface UserData {
   id: string;
@@ -104,7 +103,7 @@ const OverviewScreen = () => {
 
       // Provide default values if data is undefined
       return {
-        attendanceRate: analytics.data?.attendanceRate || 0,
+        attendanceRate: analytics.data?.overallAttendance || 0,
         upcomingClasses: analytics.data?.upcomingClasses || 0,
         pendingCorrections: analytics.data?.pendingCorrections || 0
       };
@@ -163,6 +162,14 @@ const OverviewScreen = () => {
 // Attendance Screen Component
 const AttendanceScreen = () => {
   const [markingAttendance, setMarkingAttendance] = useState(false);
+  const [correctionModalVisible, setCorrectionModalVisible] = useState(false);
+  const [correctionForm, setCorrectionForm] = useState({
+    attendance_id: '',
+    reason: ''
+  });
+  const [attendanceModalVisible, setAttendanceModalVisible] = useState(false);
+  const [reportModalVisible, setReportModalVisible] = useState(false);
+
   const {
     data: attendanceData,
     loading,
@@ -182,7 +189,7 @@ const AttendanceScreen = () => {
     };
   });
 
-  const handleMarkAttendance = async () => {
+  const handleMarkAttendance = async (action: 'checkin' | 'checkout') => {
     try {
       setMarkingAttendance(true);
       const attendanceData = {
@@ -190,33 +197,46 @@ const AttendanceScreen = () => {
         block_name: "Main_Block"
       };
 
-      await apiService.markAttendance(attendanceData);
-      Alert.alert('Success', 'Attendance marked successfully');
+      if (action === 'checkin') {
+        await apiService.markAttendance(attendanceData);
+        Alert.alert('Success', 'Attendance marked successfully');
+      } else if (action === 'checkout') {
+        await apiService.checkout();
+        Alert.alert('Success', 'Checked out successfully');
+      }
+
       onRefresh();
     } catch (error) {
       if (error instanceof Error) {
-        Alert.alert('Error', error.message);
+        if (error.message.includes('operator does not exist: character varying <= time without time zone')) {
+          Alert.alert('Error', 'There was an issue with the time format. Please try again later.');
+        } else {
+          Alert.alert('Error', error.message);
+        }
       } else {
         Alert.alert('Error', 'An unknown error occurred');
       }
     } finally {
       setMarkingAttendance(false);
+      setAttendanceModalVisible(false);
     }
   };
 
-  const handleRequestCorrection = async () => {
+  const handleRequestCorrection = async (formData: { attendance_id: string; reason: string }) => {
     try {
-      const correctionData = {
-        attendance_id: "some_id",
-        reason: "Was present but marked absent"
-      };
-
-      await apiService.requestAttendanceCorrection(correctionData);
+      await apiService.requestAttendanceCorrection({
+        attendance_id: formData.attendance_id,
+        reason: formData.reason
+      });
       Alert.alert('Success', 'Correction request submitted');
       onRefresh();
     } catch (error) {
       if (error instanceof Error) {
-        Alert.alert('Error', error.message);
+        if (error.message.includes('foreign key constraint')) {
+          Alert.alert('Error', 'Attendance ID does not match any existing record.');
+        } else {
+          Alert.alert('Error', error.message);
+        }
       } else {
         Alert.alert('Error', 'An unknown error occurred');
       }
@@ -268,7 +288,7 @@ const AttendanceScreen = () => {
 
       <TouchableOpacity
         style={[styles.button, markingAttendance && styles.buttonDisabled]}
-        onPress={handleMarkAttendance}
+        onPress={() => setAttendanceModalVisible(true)}
         disabled={markingAttendance}
       >
         <Text style={styles.buttonText}>
@@ -276,11 +296,11 @@ const AttendanceScreen = () => {
         </Text>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.button} onPress={() => { }}>
+      <TouchableOpacity style={styles.button} onPress={() => setReportModalVisible(true)}>
         <Text style={styles.buttonText}>View Attendance Report</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity style={styles.button} onPress={handleRequestCorrection}>
+      <TouchableOpacity style={styles.button} onPress={() => setCorrectionModalVisible(true)}>
         <Text style={styles.buttonText}>Request Correction</Text>
       </TouchableOpacity>
 
@@ -302,6 +322,121 @@ const AttendanceScreen = () => {
           ))}
         </View>
       )}
+
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={attendanceModalVisible}
+        onRequestClose={() => setAttendanceModalVisible(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Mark Attendance</Text>
+
+            <TouchableOpacity
+              style={styles.button}
+              onPress={() => handleMarkAttendance('checkin')}
+            >
+              <Text style={styles.buttonText}>Check In</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.button}
+              onPress={() => handleMarkAttendance('checkout')}
+            >
+              <Text style={styles.buttonText}>Check Out</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.button, styles.cancelButton]}
+              onPress={() => setAttendanceModalVisible(false)}
+            >
+              <Text style={styles.buttonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={correctionModalVisible}
+        onRequestClose={() => setCorrectionModalVisible(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Request Attendance Correction</Text>
+
+            <TextInput
+              style={styles.modalInput}
+              placeholder="Attendance ID"
+              value={correctionForm.attendance_id}
+              onChangeText={(text) => setCorrectionForm({ ...correctionForm, attendance_id: text })}
+              keyboardType="numeric"
+            />
+
+            <TextInput
+              style={[styles.modalInput, styles.textArea]}
+              placeholder="Reason for correction"
+              value={correctionForm.reason}
+              onChangeText={(text) => setCorrectionForm({ ...correctionForm, reason: text })}
+              multiline
+              numberOfLines={4}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.button, styles.cancelButton]}
+                onPress={() => setCorrectionModalVisible(false)}
+              >
+                <Text style={styles.buttonText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.button}
+                onPress={() => {
+                  handleRequestCorrection(correctionForm);
+                  setCorrectionModalVisible(false);
+                }}
+              >
+                <Text style={styles.buttonText}>Submit</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={reportModalVisible}
+        onRequestClose={() => setReportModalVisible(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Attendance Report</Text>
+            {attendanceData?.report && (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Recent Week Attendance</Text>
+                {attendanceData.report.weekly_report.map((entry: { week: string; attended_periods: number; total_periods: number }, index: number) => (
+                  <View key={index} style={styles.attendanceEntry}>
+                    <Text style={styles.entryDate}>Week {entry.week}</Text>
+                    <Text style={styles.entryStatus}>
+                      {entry.attended_periods} / {entry.total_periods}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            )}
+            <TouchableOpacity
+              style={[styles.button, styles.cancelButton]}
+              onPress={() => setReportModalVisible(false)}
+            >
+              <Text style={styles.buttonText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 };
@@ -384,6 +519,7 @@ const TimetableScreen = () => {
     </ScrollView>
   );
 };
+
 // Profile Screen Component
 const ProfileScreen = () => {
   const [isEditing, setIsEditing] = useState(false);
@@ -554,10 +690,28 @@ const StudentDashboard = () => {
 };
 
 const styles = StyleSheet.create({
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 15,
+  },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
   screen: {
     flex: 1,
     padding: 20,
     backgroundColor: '#f0f0f0',
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    borderRadius: 10,
+    padding: 20,
+    width: '90%',
+    maxWidth: 400,
   },
   loadingContainer: {
     flex: 1,
@@ -583,6 +737,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    color: '#3498db',
   },
   cardContent: {
     marginLeft: 15,
@@ -637,6 +797,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#ecf0f1',
   },
+  textArea: {
+    height: 100,
+    textAlignVertical: 'top',
+  },
   entryDate: {
     color: '#34495e',
   },
@@ -673,14 +837,19 @@ const styles = StyleSheet.create({
     padding: 15,
     marginBottom: 20,
   },
-
+  modalInput: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 5,
+    padding: 10,
+    marginBottom: 10,
+  },
   dayText: {
     fontSize: 16,
     fontWeight: 'bold',
     color: '#2c3e50',
     marginBottom: 5,
   },
-
   dayHeader: {
     fontSize: 18,
     fontWeight: 'bold',
@@ -778,7 +947,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
   },
-
   classHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -790,7 +958,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#3498db',
   },
-
   classDetails: {
     borderTopWidth: 1,
     borderTopColor: '#ecf0f1',
@@ -824,3 +991,4 @@ const styles = StyleSheet.create({
 });
 
 export default StudentDashboard;
+   

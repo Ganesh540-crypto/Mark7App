@@ -7,6 +7,7 @@ from flask_mail import Mail, Message
 import matplotlib.pyplot as plt
 import io
 import base64
+from sqlalchemy import case
 
 student_ns = Namespace('student', description='Student operations')
 
@@ -115,38 +116,26 @@ class AttendanceReport(Resource):
     def get(self, current_user):
         """Generates an attendance report for the student."""
         try:
-            total_periods = Attendance.query.filter_by(user_id=current_user).count()
-            attended_periods = Attendance.query.filter_by(user_id=current_user, status='present').count()
-            attendance_percentage = (attended_periods / total_periods) * 100 if total_periods > 0 else 0
-
-            attendance_status = 'green' if attendance_percentage >= 75 else 'yellow' if attendance_percentage >= 65 else 'red'
+            from sqlalchemy.sql.expression import extract, case, desc
+            from sqlalchemy.sql import func
 
             weekly_report = db.session.query(
-                db.func.strftime('%W', Attendance.check_in_time).label('week'),
-                db.func.count().label('total_periods'),
-                db.func.sum(
-                    case(
-                        (Attendance.status == 'present', 1),
-                        else_=0
-                    )
-                ).label('attended_periods')
-            ).filter(Attendance.user_id == current_user
-            ).group_by('week'
-            ).order_by(db.desc('week')
-            ).limit(4).all()
+                extract('week', Attendance.check_in_time).label('week'),
+                func.count().label('total_periods'),
+                func.sum(case([(Attendance.status == 'present', 1)], else_=0)).label('attended_periods')
+            ).filter(
+                Attendance.user_id == current_user
+            ).group_by('week').order_by(desc('week')).limit(4).all()
 
             return {
                 'status': 'success',
-                'attendance_percentage': attendance_percentage,
-                'attendance_status': attendance_status,
-                'total_periods': total_periods,
-                'attended_periods': attended_periods,
-                'weekly_report': [{'week': w.week, 'total_periods': w.total_periods, 'attended_periods': w.attended_periods} for w in weekly_report]
+                'data': {
+                    'weekly_report': [{'week': w.week, 'total_periods': w.total_periods, 'attended_periods': w.attended_periods} for w in weekly_report]
+                }
             }, 200
 
         except Exception as e:
             return {'status': 'error', 'message': str(e)}, 500
-
 @student_ns.route('/view_timetable')
 class ViewTimetable(Resource):
     @token_required
@@ -342,80 +331,60 @@ class StudentProfile(Resource):
 class AttendanceAnalytics(Resource):
     @token_required
     def get(self, current_user):
+        """Retrieves attendance analytics for the last 30 days."""
         try:
+            # Get attendance data for the last 30 days
             end_date = datetime.now()
             start_date = end_date - timedelta(days=30)
             
-            # Daily attendance data
-            daily_attendance = db.session.query(
+            attendance_data = db.session.query(
                 db.func.date(Attendance.check_in_time).label('date'),
                 db.func.count(Attendance.id).label('total_classes'),
-                db.func.sum(case((Attendance.status == 'present', 1), else_=0)).label('attended_classes')
+                db.func.sum(
+                    case(
+                        (Attendance.status == 'present', 1),
+                        else_=0
+                    )
+                ).label('attended_classes')
             ).filter(
                 Attendance.user_id == current_user,
                 Attendance.check_in_time.between(start_date, end_date)
             ).group_by(db.func.date(Attendance.check_in_time)).all()
+            dates = [data.date.strftime('%Y-%m-%d') for data in attendance_data]
+            attendance_rates = [data.attended_classes / data.total_classes * 100 if data.total_classes > 0 else 0 for data in attendance_data]
 
-            # Monthly attendance trend
-            monthly_trend = db.session.query(
-                db.func.extract('month', Attendance.check_in_time).label('month'),
-                db.func.count(Attendance.id).label('total_classes'),
-                db.func.sum(case((Attendance.status == 'present', 1), else_=0)).label('attended_classes')
-            ).filter(
-                Attendance.user_id == current_user
-            ).group_by(db.func.extract('month', Attendance.check_in_time)).all()
+            # Create a line chart
+            plt.figure(figsize=(12, 6))
+            plt.plot(dates, attendance_rates, marker='o')
+            plt.title('Attendance Rate Over Last 30 Days')
+            plt.xlabel('Date')
+            plt.ylabel('Attendance Rate (%)')
+            plt.ylim(0, 100)
+            plt.xticks(rotation=45)
+            plt.tight_layout()
 
-            # Subject-wise attendance
-            subject_attendance = db.session.query(
-                Subject.name.label('subject'),
-                db.func.count(Attendance.id).label('total_classes'),
-                db.func.sum(case((Attendance.status == 'present', 1), else_=0)).label('attended_classes')
-            ).join(Subject).filter(
-                Attendance.user_id == current_user
-            ).group_by(Subject.name).all()
+            # Convert plot to base64 encoded string
+            img = io.BytesIO()
+            plt.savefig(img, format='png')
+            img.seek(0)
+            plot_url = base64.b64encode(img.getvalue()).decode()
 
-            # Time slot analysis
-            time_slot_analysis = db.session.query(
-                db.func.extract('hour', Attendance.check_in_time).label('hour'),
-                db.func.count(Attendance.id).label('class_count')
-            ).filter(
-                Attendance.user_id == current_user
-            ).group_by(db.func.extract('hour', Attendance.check_in_time)).all()
+            # Calculate overall attendance rate
+            overall_attendance_rate = sum(attendance_rates) / len(attendance_rates) if attendance_rates else 0
 
             return {
                 'status': 'success',
                 'data': {
-                    'daily_attendance': [{
-                        'date': data.date.strftime('%Y-%m-%d'),
-                        'attendance_rate': (data.attended_classes / data.total_classes * 100) if data.total_classes > 0 else 0
-                    } for data in daily_attendance],
-                    
-                    'monthly_trend': [{
-                        'month': calendar.month_name[int(data.month)],
-                        'attendance_rate': (data.attended_classes / data.total_classes * 100) if data.total_classes > 0 else 0
-                    } for data in monthly_trend],
-                    
-                    'subject_wise': [{
-                        'subject': data.subject,
-                        'attendance_rate': (data.attended_classes / data.total_classes * 100) if data.total_classes > 0 else 0
-                    } for data in subject_attendance],
-                    
-                    'time_slot_distribution': [{
-                        'hour': f"{int(data.hour):02d}:00",
-                        'class_count': data.class_count
-                    } for data in time_slot_analysis],
-                    
-                    'summary': {
-                        'total_classes': sum(d.total_classes for d in daily_attendance),
-                        'classes_attended': sum(d.attended_classes for d in daily_attendance),
-                        'average_rate': sum((d.attended_classes / d.total_classes * 100) if d.total_classes > 0 else 0 
-                                         for d in daily_attendance) / len(daily_attendance) if daily_attendance else 0
-                    }
+                    'overall_attendance_rate': round(overall_attendance_rate, 2),
+                    'daily_attendance_rates': dict(zip(dates, attendance_rates)),
+                    'attendance_chart': plot_url
                 }
             }, 200
 
         except Exception as e:
-            return {'status': 'error', 'message': str(e)}, 500@student_ns.route('/search')
+
+            return {'status': 'error', 'message': str(e)}, 500
+@student_ns.route('/search')
 class SearchAttendance(Resource):
     @token_required
     def get(self, current_user):

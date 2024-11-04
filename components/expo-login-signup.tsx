@@ -45,26 +45,12 @@ const LoginSignup = ({ navigation }: { navigation: any }) => {
       }),
     ]).start();
 
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(rotateAnim, {
-          toValue: 1,
-          duration: 2000,
-          easing: Easing.linear,
-          useNativeDriver: true
-        }),
-        Animated.timing(scaleAnim, {
-          toValue: 1.2,
-          duration: 1000,
-          useNativeDriver: true
-        }),
-        Animated.timing(scaleAnim, {
-          toValue: 1,
-          duration: 1000,
-          useNativeDriver: true
-        })
-      ])
-    ).start();
+    Animated.timing(rotateAnim, {
+      toValue: 1,
+      duration: 1000,
+      easing: Easing.linear,
+      useNativeDriver: true,
+    }).start();
   }, []);
 
   const spin = rotateAnim.interpolate({

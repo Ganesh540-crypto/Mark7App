@@ -1,7 +1,7 @@
 import axios, { AxiosInstance, AxiosError, AxiosRequestConfig } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const BASE_URL = 'https://superior-roxy-cryptobitsbee-9399e9c7.koyeb.app';
+const BASE_URL = 'https://mark77.onrender.com/';
 
 export interface ApiResponse {
   status: string;
@@ -9,6 +9,11 @@ export interface ApiResponse {
   message: string;
   timetable?: any; // or replace 'any' with the specific type if known
   data: any;
+}
+
+export interface CheckoutResponse {
+  status: string;
+  message: string;
 }
 
 export interface UserData {
@@ -48,6 +53,10 @@ export interface ProfileUpdateData {
   year?: string;
   branch?: string;
   department?: string;
+}
+
+export interface Checkout{
+  "attendance_id": "string"
 }
 
 export interface AttendanceMarkRequest {
@@ -269,6 +278,15 @@ class ApiService {
     return response.data;
   }
 
+
+  async checkout(): Promise<ApiResponse> {
+    try {
+      const response = await this.api.post<ApiResponse>('/student/checkout');
+      return response.data;
+    } catch (error) {
+      throw this.handleApiError(error);
+    }
+  }
   async getStudentAnalytics(): Promise<ApiResponse> {
     const response = await this.api.get<ApiResponse>('/faculty/student_analytics');
     return response.data;
