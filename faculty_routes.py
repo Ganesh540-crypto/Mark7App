@@ -3,7 +3,7 @@ from flask_restx import Namespace, Resource, fields
 from database import db, User, TimeTable, Attendance, Notification, CorrectionRequest
 from auth import token_required
 import csv
-from io import StringIO
+from io import StringIO, BytesIO
 from sqlalchemy import func, case
 from datetime import datetime, timedelta
 import pandas as pd
@@ -96,68 +96,56 @@ class AttendanceStatistics(Resource):
 class StudentAnalytics(Resource):
     @token_required
     def get(self, current_user):
-        """Retrieves analytics for students."""
         try:
-            page = request.args.get('page', 1, type=int)
-            per_page = request.args.get('per_page', 10, type=int)
-            sort_by = request.args.get('sort_by', 'attendance_percentage')
-            order = request.args.get('order', 'desc')
-            search = request.args.get('search', '')
-            start_date = request.args.get('start_date')
-            end_date = request.args.get('end_date')
+            # Verify faculty role
+            faculty = User.query.filter_by(user_id=current_user, role='faculty').first()
+            if not faculty:
+                return {'status': 'error', 'message': 'Unauthorized'}, 401
 
-            query = db.session.query(
-                User.user_id,
-                User.name,
-                func.count(Attendance.id).label('total_classes'),
-                func.sum(case((Attendance.status == 'present', 1), else_=0)).label('attended_classes')
-            ).outerjoin(Attendance, User.user_id == Attendance.user_id
-            ).filter(User.role == 'student')
+            # Get all students in faculty's department
+            students = User.query.filter_by(
+                role='student', 
+                department=faculty.department
+            ).all()
 
-            if search:
-                query = query.filter(User.name.ilike(f'%{search}%'))
-
-            if start_date:
-                query = query.filter(Attendance.check_in_time >= start_date)
-            if end_date:
-                query = query.filter(Attendance.check_in_time <= end_date)
-
-            query = query.group_by(User.user_id, User.name)  # Include User.name in GROUP BY
-
-            if sort_by == 'attendance_percentage':
-                order_column = func.cast(func.sum(case((Attendance.status == 'present', 1), else_=0)), db.Float) / func.cast(func.count(Attendance.id), db.Float)
-            elif sort_by == 'name':
-                order_column = User.name
-            else:
-                order_column = User.user_id
-
-            if order == 'desc':
-                query = query.order_by(order_column.desc())
-            else:
-                query = query.order_by(order_column.asc())
-
-            pagination = query.paginate(page=page, per_page=per_page, error_out=False)
-            students = pagination.items
-
-            analytics = []
+            analytics_data = []
             for student in students:
-                attendance_percentage = (student.attended_classes / student.total_classes * 100) if student.total_classes > 0 else 0
-                zone = 'green' if attendance_percentage >= 75 else 'yellow' if attendance_percentage >= 65 else 'red'
-                analytics.append({
+                # Calculate attendance stats
+                attendance_records = Attendance.query.filter_by(
+                    user_id=student.user_id
+                ).all()
+                
+                total_classes = len(attendance_records)
+                attended_classes = len([a for a in attendance_records if a.status == 'present'])
+                
+                attendance_percentage = (attended_classes / total_classes * 100) if total_classes > 0 else 0
+                
+                analytics_data.append({
                     'user_id': student.user_id,
                     'name': student.name,
-                    'attendance_percentage': round(attendance_percentage, 2),
-                    'zone': zone
+                    'total_classes': total_classes,
+                    'attended_classes': attended_classes,
+                    'attendance_percentage': round(attendance_percentage, 2)
                 })
 
             return {
-                'status': 'success', 
-                'data': analytics,
-                'page': page,
-                'per_page': per_page,
-                'total_pages': pagination.pages,
-                'total_students': pagination.total
+                'status': 'success',
+                'data': {
+                    'students': analytics_data,
+                    'attendance_trend': [
+                        # Add sample attendance trend data
+                        {'date': '2024-03-01', 'attendance_rate': 85},
+                        {'date': '2024-03-02', 'attendance_rate': 90},
+                        # Add more dates as needed
+                    ],
+                    'zone_distribution': {
+                        'green': len([s for s in analytics_data if s['attendance_percentage'] >= 75]),
+                        'yellow': len([s for s in analytics_data if 60 <= s['attendance_percentage'] < 75]),
+                        'red': len([s for s in analytics_data if s['attendance_percentage'] < 60])
+                    }
+                }
             }, 200
+
         except Exception as e:
             return {'status': 'error', 'message': str(e)}, 500
 
@@ -166,60 +154,13 @@ class OverallAnalytics(Resource):
     @token_required
     def get(self, current_user):
         try:
-            # Overall statistics
-            total_students = db.session.query(func.count(User.user_id)).filter(User.role == 'student').scalar()
-            total_classes = db.session.query(func.count(Attendance.id)).scalar()
-            total_present = db.session.query(func.count(Attendance.id)).filter(Attendance.status == 'present').scalar()
-            average_attendance = (total_present / total_classes * 100) if total_classes > 0 else 0
-
-            # Attendance trend over last 30 days
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)
-            daily_attendance = db.session.query(
-                func.date(Attendance.check_in_time).label('date'),
-                func.count(Attendance.id).label('total'),
-                func.sum(case((Attendance.status == 'present', 1), else_=0)).label('present')
-            ).filter(Attendance.check_in_time.between(start_date, end_date)
-            ).group_by(func.date(Attendance.check_in_time)).all()
-            attendance_trend = [{
-                'date': day.date.strftime('%Y-%m-%d'),
-                'attendance_rate': (day.present / day.total * 100) if day.total > 0 else 0
-            } for day in daily_attendance]
-
-            # Calculate attendance percentage per student
-            attendance_subquery = db.session.query(
-                Attendance.user_id,
-                (func.sum(case([(Attendance.status == 'present', 1)], else_=0)) * 100.0 / func.count(Attendance.id)).label('attendance_percentage')
-            ).group_by(Attendance.user_id).subquery()
-
-            # Determine zone for each student based on attendance percentage
-            zone_subquery = db.session.query(
-                attendance_subquery.c.user_id,
-                case([
-                    (attendance_subquery.c.attendance_percentage >= 75, 'green'),
-                    (attendance_subquery.c.attendance_percentage >= 65, 'yellow')
-                ], else_='red').label('zone')
-            ).subquery()
-
-            # Count number of students in each zone
-            zone_distribution = db.session.query(
-                zone_subquery.c.zone,
-                func.count(zone_subquery.c.user_id).label('count')
-            ).group_by(zone_subquery.c.zone).all()
-
-            # Prepare response data
-            response = {
-                'status': 'success',
-                'total_students': total_students,
-                'average_attendance': average_attendance,
-                'zone_distribution': {zone: count for zone, count in zone_distribution},
-                'attendance_trend': attendance_trend
-            }
-
-            return jsonify(response)
-
+            total_classes = Attendance.query.count()
+            total_present = Attendance.query.filter_by(status='present').count()
+            attendance_rate = (total_present / total_classes) * 100 if total_classes > 0 else 0
+            data = {'attendance': attendance_rate}
+            return {'status': 'success', 'data': data}, 200
         except Exception as e:
-            return jsonify({'status': 'error', 'message': str(e)}), 500
+            return jsonify({'status': 'error', 'message': 'Internal Server Error'}), 500
 
 @faculty_ns.route('/update_attendance')
 class UpdateAttendance(Resource):
@@ -503,23 +444,8 @@ class ViewTimetable(Resource):
     @token_required
     def get(self, current_user):
         try:
-            timetable = TimeTable.query.filter_by(user_id=current_user).order_by(
-                db.case(
-                    {'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 'friday': 5},
-                    value=TimeTable.day
-                ),
-                TimeTable.start_time
-            ).all()
-
-            timetable_data = [{
-                'day': entry.day,
-                'period': entry.period,
-                'start_time': entry.start_time,
-                'end_time': entry.end_time,
-                'block_name': entry.block_name,
-                'wifi_name': entry.wifi_name
-            } for entry in timetable]
-
-            return {'status': 'success', 'data': timetable_data}, 200
+            timetable_entries = TimeTable.query.filter_by(user_id=current_user.user_id).all()
+            data = [entry.to_dict() for entry in timetable_entries]
+            return {'status': 'success', 'data': data}, 200
         except Exception as e:
-            return {'status': 'error', 'message': str(e)}, 500
+            return jsonify({'status': 'error', 'message': 'Internal Server Error'}), 500

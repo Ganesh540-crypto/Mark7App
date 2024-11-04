@@ -288,8 +288,15 @@ class ApiService {
     }
   }
   async getStudentAnalytics(): Promise<ApiResponse> {
-    const response = await this.api.get<ApiResponse>('/faculty/student_analytics');
-    return response.data;
+    try {
+      console.log('Fetching student analytics...');
+      const response = await this.api.get('/faculty/student_analytics');
+      console.log('Student analytics response:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('Student analytics error:', error);
+      throw this.handleApiError(error);
+    }
   }
 
   async getStudentsByAttendance(): Promise<ApiResponse> {

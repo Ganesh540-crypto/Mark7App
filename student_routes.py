@@ -59,7 +59,7 @@ class MarkAttendance(Resource):
                 block_name=block_name,
                 period=period,
                 wifi_name=wifi_name,
-                status='present' if not is_late else 'late'
+                status='present' if not is_llate else 'late'
             )
             db.session.add(new_attendance)
 
@@ -94,7 +94,7 @@ class Checkout(Resource):
             ).order_by(Attendance.check_in_time.desc()).first()
 
             if not attendance_record:
-                return {'status': 'error', 'message': 'No active check-in found.'}, 400
+                return {'status': 'error', 'message': 'No active attendance record found.'}, 404
 
             check_out_time = datetime.now()
             duration = (check_out_time - attendance_record.check_in_time).total_seconds() // 60
@@ -151,7 +151,7 @@ class ViewTimetable(Resource):
             ).all()
 
             if not timetable:
-                return {'status': 'error', 'message': 'No timetable found for this user.'}, 404
+                return {'status': 'error', 'message': 'Timetable not found.'}, 404
 
             formatted_timetable = [{
                 'day': t.day,
@@ -219,7 +219,7 @@ class NotifyUpcomingClasses(Resource):
                 
                 return {"status": "success", "message": "Notification sent"}, 200
             else:
-                return {"status": "info", "message": "No classes tomorrow"}, 200
+                return {'status': 'error', 'message': 'No classes found for tomorrow.'}, 404
         except Exception as e:
             return {'status': 'error', 'message': str(e)}, 500
 
@@ -322,7 +322,7 @@ class StudentProfile(Resource):
             student.branch = data.get('branch', student.branch)
 
             db.session.commit()
-            return {'status': 'success', 'message': 'Profile updated successfully'}, 200
+            return {'status': 'success', 'message': 'Profile updated successfully.'}, 200
         except Exception as e:
             db.session.rollback()
             return {'status': 'error', 'message': str(e)}, 500
